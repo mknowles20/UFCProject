@@ -1,0 +1,247 @@
+---
+title: "Final_UFC"
+author: "Sinha, AlKabbani, and Knowles"
+date: "12/20/2019"
+output:
+  html_document:
+    theme: sandstone
+    highlight: monochrome
+runtime: shiny
+---
+# Introduction
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(warn=-1)
+```
+
+```{r, include = FALSE}
+mypacks <- c("tidyverse", "rpart", "mosaic", "partykit", "randomForest", "reshape2", "data.table", "reshape2", "nnet")  # what packages are needed?
+packs <- installed.packages()   # find installed package list
+install.me <- mypacks[!(mypacks %in% packs[,"Package"])]  #what needs to be installed?
+if (length(install.me) >= 1) install.packages(install.me, repos = "http://cran.us.r-project.org")   # install (if needed)
+lapply(mypacks, library, character.only=TRUE)  # load all packages
+library(tidyverse)
+library(rpart)
+library(mosaic)
+library(partykit)
+library(randomForest)
+library(reshape2)
+library(data.table)
+library(reshape2)
+library(nnet)
+library(shiny)
+df <- read_csv("https://raw.githubusercontent.com/econ122-f19/finalproject-thereason4thebeatin/master/data.csv?token=AJIRWMKUHX6YXRO4G4LSDF26ALDVY")
+fighters_df <- read_csv("https://raw.githubusercontent.com/econ122-f19/finalproject-thereason4thebeatin/master/raw_fighter_details.csv?token=AJIRWMPJLBSQO3TWIL5I7226ALDXK")
+preprocessed_df <- read.csv("https://raw.githubusercontent.com/econ122-f19/finalproject-thereason4thebeatin/master/preprocessed_data.csv?token=AJIRWMPIX4ADTQ3TAPIYHMK6ALDY6")
+```
+
+The fight-level dataset contains super granular data on every fight from 1993 to 2019. Our goal is to build a model that: 
+
+1) gives us an understanding of what factors contribute the most, and in what ways, towards one fighter winning over another. In other words, this is an exercise in understanding how fighters compare across a variety of attributes, and evaluating to what extent each comparison matters. 
+2) is able to predict which fighter will win
+
+Before we start building models on top of it, we have to wrangle the data to make it make sense for modeling:
+
+1. **Removing uninformative dimensions:**
+Some dimensions in our fight-level dataset, such as the referee or state, do not help us understand the fighters and how they compare. To that end, we start by removing these details from our training datset Even though they might marginally improve our model's evaluation metrics, they do not contribute to our understanding of each fighter, and are therefore unlikely to meaningfully explain why one fighter wins over another. We're also removing rows that have NAs - these fighters tend to not be representative of your typical UFC fighter, and unfortunately it poses too many data concerns. We're left with over 3,000 fights to work with. (A quick comparison of the two datasets shows us that the majority of fights excluded are between 1993-1997, likely when some of these metrics were not recorded). 
+
+2. **Factorizing**
+Intuitively, it makes sense that different attributes will matter differently according to the weight class. We'll reframe this column into a factor to make it easier to work with. 
+
+3. **Probability of red winning**
+This prediction problem is a binary classification - we're looking at whether the blue of red corner wins. If we're using an OLS regression technique (like with logistic regression) we'll have to reframe the problem as "what is the probability that __ corner wins?". Given that for most fights, the UFC gives the fighter with this most __name recognition__ the red corner, we'll assess the probability that the red corner wins. 
+
+4. **Difference between fighters**
+Finally, at its core, our analysis seeks to understand how fighters compare against each other. To this end, it is useful to have a datsaet that explicitly the differences in fighters for each stat. We're going to be looking at the $\frac{Red Fighter - Blue Fighter} {Red Fighter}$ difference. 
+
+```{r data_wrangling, include=FALSE}
+df <- df[complete.cases(df), ]
+df$weight_factor <- as.factor(df$weight_class)
+df_predict <- df %>% select(-c(Referee, date, location, R_fighter, B_fighter, weight_class))
+df_predict <- df_predict %>% mutate(red_win = if_else(Winner == "Red", 1, 0), fight_id = row_number())
+fight_comp <- df_predict %>% select(-c(Winner, title_bout, no_of_rounds)) %>% rename(R_total_time_fought = "R_total_time_fought(seconds)", B_total_time_fought = "B_total_time_fought(seconds)")
+#creating diff columns 
+fight_comp_df <- fight_comp %>% mutate(diff_wins = (R_wins - B_wins)/R_wins, diff_win_by_TKO_Doctor_Stoppage = (R_win_by_TKO_Doctor_Stoppage - B_win_by_TKO_Doctor_Stoppage)/R_win_by_TKO_Doctor_Stoppage, diff_win_by_Submission = (R_win_by_Submission - B_win_by_Submission)/R_win_by_Submission, diff_win_by_Decision_Unanimous = (R_win_by_Decision_Unanimous - B_win_by_Decision_Unanimous)/R_win_by_Decision_Unanimous, diff_win_by_Decision_Split = (R_win_by_Decision_Split - B_win_by_Decision_Split)/R_win_by_Decision_Split, diff_win_by_Decision_Majority = (R_win_by_Decision_Majority - B_win_by_Decision_Majority)/R_win_by_Decision_Majority, diff_Weight_lbs = (R_Weight_lbs - B_Weight_lbs)/R_Weight_lbs, diff_total_title_bouts = (R_total_title_bouts - B_total_title_bouts)/R_total_title_bouts, diff_total_time_fought = (R_total_time_fought - B_total_time_fought)/R_total_time_fought, diff_total_rounds_fought = (R_total_rounds_fought - B_total_rounds_fought)/R_total_rounds_fought, diff_Reach_cms = (R_Reach_cms - B_Reach_cms)/R_Reach_cms, diff_losses = (R_losses - B_losses)/R_losses, diff_longest_win_streak = (R_longest_win_streak - B_longest_win_streak)/R_longest_win_streak, diff_Height_cms = (R_Height_cms - B_Height_cms)/R_Height_cms, diff_draw = (R_draw - B_draw)/R_draw, diff_current_win_streak = (R_current_win_streak - B_current_win_streak)/R_current_win_streak, diff_current_lose_streak = (R_current_lose_streak - B_current_lose_streak)/R_current_lose_streak, diff_avg_TOTAL_STR_landed = (R_avg_TOTAL_STR_landed - B_avg_TOTAL_STR_landed)/R_avg_TOTAL_STR_landed, diff_avg_TOTAL_STR_att = (R_avg_TOTAL_STR_att - B_avg_TOTAL_STR_att)/R_avg_TOTAL_STR_att)
+```
+
+```{r,include=FALSE}
+fight_comp_df <- fight_comp_df %>% mutate(diff_avg_TD_pct = (R_avg_TD_pct - B_avg_TD_pct)/R_avg_TD_pct, diff_avg_TD_landed = (R_avg_TD_landed - B_avg_TD_landed)/R_avg_TD_landed, diff_avg_TD_att = (R_avg_TD_att - B_avg_TD_att)/R_avg_TD_att, diff_avg_SU_ATT = (R_avg_SUB_ATT - B_avg_SUB_ATT)/R_avg_SUB_ATT, diff_avg_SIG_STR_pct = (R_avg_SIG_STR_pct - B_avg_SIG_STR_pct)/R_avg_SIG_STR_pct, diff_avg_SIG_STR_landed = (R_avg_SIG_STR_landed - B_avg_SIG_STR_landed)/R_avg_SIG_STR_landed, diff_avg_SIG_STR_att = (R_avg_SIG_STR_att - B_avg_SIG_STR_att)/R_avg_SIG_STR_att, diff_avg_REV = (R_avg_REV - B_avg_REV)/R_avg_REV, diff_avg_PASS = (R_avg_PASS - B_avg_PASS)/R_avg_PASS, diff_avg_opp_TOTAL_STR_landed = (R_avg_opp_TOTAL_STR_landed - B_avg_opp_TOTAL_STR_landed)/R_avg_opp_TOTAL_STR_landed, diff_avg_opp_TOTAL_STR_att = (R_avg_opp_TOTAL_STR_att - B_avg_opp_TOTAL_STR_att)/R_avg_opp_TOTAL_STR_att)
+fight_comp_df <- fight_comp_df %>% mutate(diff_avg_opp_TD_pct = (R_avg_opp_TD_pct - B_avg_opp_TD_pct)/R_avg_opp_TD_pct, diff_avg_opp_TD_landed = (R_avg_opp_TD_landed - B_avg_opp_TD_landed)/R_avg_opp_TD_landed, diff_avg_opp_TD_att = (R_avg_opp_TD_att - B_avg_opp_TD_att)/R_avg_opp_TD_att, diff_avg_opp_SU_ATT = (R_avg_opp_SUB_ATT - B_avg_opp_SUB_ATT)/R_avg_opp_SUB_ATT, diff_avg_opp_SIG_STR_pct = (R_avg_opp_SIG_STR_pct - B_avg_opp_SIG_STR_pct)/R_avg_opp_SIG_STR_pct, diff_avg_opp_SIG_STR_landed = (R_avg_opp_SIG_STR_landed - B_avg_opp_SIG_STR_landed)/R_avg_opp_SIG_STR_landed, diff_avg_opp_SIG_STR_att = (R_avg_opp_SIG_STR_att - B_avg_opp_SIG_STR_att)/R_avg_opp_SIG_STR_att, diff_avg_opp_REV = (R_avg_opp_REV - B_avg_opp_REV)/R_avg_opp_REV, diff_avg_opp_PASS = (R_avg_opp_PASS - B_avg_opp_PASS)/R_avg_opp_PASS, diff_avg_opp_LEG_landed = (R_avg_opp_LEG_landed - B_avg_opp_LEG_landed)/R_avg_opp_LEG_landed, diff_avg_opp_LEG_att = (R_avg_opp_LEG_att - B_avg_opp_LEG_att)/R_avg_opp_LEG_att, diff_avg_opp_KD = (R_avg_opp_KD - B_avg_opp_KD)/R_avg_opp_KD, diff_avg_opp_HEAD_landed = (R_avg_opp_HEAD_landed - B_avg_opp_HEAD_landed)/R_avg_opp_HEAD_landed)
+fight_comp_df <- fight_comp_df %>% mutate(diff_avg_opp_HEAD_att = (R_avg_opp_HEAD_att - B_avg_opp_HEAD_att)/R_avg_opp_HEAD_att, diff_avg_opp_GROUND_landed = (R_avg_opp_GROUND_landed - B_avg_opp_GROUND_landed)/R_avg_opp_GROUND_landed, diff_avg_opp_GROUND_att = (R_avg_opp_GROUND_att - B_avg_opp_GROUND_att)/R_avg_opp_GROUND_att, diff_avg_opp_DISTANCE_landed = (R_avg_opp_DISTANCE_landed - B_avg_opp_DISTANCE_landed)/R_avg_opp_DISTANCE_landed, diff_avg_opp_DISTANCE_att = (R_avg_opp_DISTANCE_att - B_avg_opp_DISTANCE_att)/R_avg_opp_DISTANCE_att, diff_avg_opp_CLINCH_landed = (R_avg_opp_CLINCH_landed - B_avg_opp_CLINCH_landed)/R_avg_opp_CLINCH_landed, diff_avg_opp_CLINCH_att = (R_avg_opp_CLINCH_att - B_avg_opp_CLINCH_att)/R_avg_opp_CLINCH_att, diff_avg_opp_ODY_landed = (R_avg_opp_BODY_landed - B_avg_opp_BODY_landed)/R_avg_opp_BODY_landed, diff_avg_opp_ODY_att = (R_avg_opp_BODY_att - B_avg_opp_BODY_att)/R_avg_opp_BODY_att, diff_avg_LEG_landed = (R_avg_LEG_landed - B_avg_LEG_landed)/R_avg_LEG_landed, diff_avg_LEG_att = (R_avg_LEG_att - B_avg_LEG_att)/R_avg_LEG_att, diff_avg_KD = (R_avg_KD - B_avg_KD)/R_avg_KD, diff_avg_HEAD_landed = (R_avg_HEAD_landed - B_avg_HEAD_landed)/R_avg_HEAD_landed, diff_avg_HEAD_att = (R_avg_HEAD_att - B_avg_HEAD_att)/R_avg_HEAD_att, diff_avg_GROUND_landed = (R_avg_GROUND_landed - B_avg_GROUND_landed)/R_avg_GROUND_landed, diff_avg_GROUND_att = (R_avg_GROUND_att - B_avg_GROUND_att)/R_avg_GROUND_att, diff_avg_DISTANCE_landed = (R_avg_DISTANCE_landed - B_avg_DISTANCE_landed)/R_avg_DISTANCE_landed, diff_avg_DISTANCE_att = (R_avg_DISTANCE_att - B_avg_DISTANCE_att)/R_avg_DISTANCE_att, diff_avg_CLINCH_landed = (R_avg_CLINCH_landed - B_avg_CLINCH_landed)/R_avg_CLINCH_landed, diff_avg_CLINCH_att = (R_avg_CLINCH_att - B_avg_CLINCH_att)/R_avg_CLINCH_att, diff_avg_ODY_landed = (R_avg_BODY_landed - B_avg_BODY_landed)/R_avg_BODY_landed, diff_avg_ODY_att = (R_avg_BODY_att - B_avg_BODY_att)/R_avg_BODY_att, diff_age = (R_age - B_age)/R_age)
+fight_comp_df <- fight_comp_df %>% select(contains("diff")) %>% mutate(fight_id = row_number())
+id_outcome <- df_predict %>% select(fight_id, red_win)
+fight_comp_df <- fight_comp_df %>% full_join(id_outcome) %>% select(fight_id, everything())
+model_df <- fight_comp_df %>% select(-c(diff_win_by_TKO_Doctor_Stoppage, diff_win_by_Submission, diff_win_by_Decision_Unanimous, diff_win_by_Decision_Split, diff_win_by_Decision_Majority, diff_total_title_bouts, diff_draw, diff_current_lose_streak)) %>% mutate(red_win = as.factor(red_win))
+#correcting for infinites
+model_df <- mutate(model_df, diff_wins = if_else(is.infinite(diff_wins)==1, 0, diff_wins))
+is.na(model_df)<-sapply(model_df, is.infinite)
+model_df[is.na(model_df)]<-0
+#making a fighter-level table to apply to our model
+red <- df %>% select(starts_with("R_")) %>% group_by(R_fighter) %>% summarise_all(funs(mean), na.rm = TRUE)
+red <- red %>% select(noquote(order(colnames(red))))
+red1 <- sub("^R_", "", colnames(red))
+red <- setnames(red, old = colnames(red), new = red1)
+blue <- df %>% select(starts_with ("B_")) %>% group_by(B_fighter) %>% summarise_all(funs(mean), na.rm = TRUE)
+blue <- blue %>% select(noquote(order(colnames(blue))))
+blue1 <- sub("^B_", "", colnames(blue))
+blue <- setnames(blue, old = colnames(blue), new = blue1)
+red_blue <- rbind(red, blue)
+fighter_df <- red_blue %>% group_by(fighter) %>% summarise_all(funs(mean), na.rm=TRUE)
+b_stance <- df %>% group_by(B_fighter, B_Stance) %>% summarise(n=n()) %>% arrange(B_fighter) %>% rename(fighter = B_fighter)
+r_stance <- df %>% group_by(R_fighter, R_Stance) %>% summarise(n=n()) %>% arrange(R_fighter) %>% rename(fighter = R_fighter)
+stance <- distinct(full_join(r_stance, b_stance) %>% select(-c(n)) %>% mutate(stance = if_else(is.na(R_Stance) == 0, R_Stance, B_Stance)) %>% select(-c(R_Stance, B_Stance)) %>% mutate(stance = if_else(is.na(stance) == 1, "Orthodox", stance)))
+fighter_df <- fighter_df %>% select(-c(Stance)) %>% full_join(stance)
+fighter_df$stance <- as.factor(fighter_df$stance)
+#assumption - if a fighter has NA in a given attribute, it makes sense to treat that like a 0, i.e. this particular technique or attribute is not representative of their fighting in a given fight. 
+fighter_df[is.na(fighter_df)] <- 0
+fighter_df <- fighter_df %>% rename(total_time_fought = "total_time_fought(seconds)")
+#this gives us a table of each fighters average attributes across their history. 
+```
+# The Data
+ 
+The two datasets we're working with are the following:
+
+```{r, echo=FALSE}
+library(kableExtra)
+kable(head(fighter_df), "html") %>% kable_styling("striped", full_width=F) %>% add_header_above(c("A Few Variables & Their Correlation with Republican Winner"=ncol(fighter_df)))
+kable(head(model_df), "html") %>% kable_styling("striped", full_width=F) %>% add_header_above(c("A Few Variables & Their Correlation with Republican Winner"=ncol(model_df)))
+```
+
+# Initial Analysis
+We plug our modelling dataset into a random forest of 500 trees, randomly selecting 20 variables at a time, and plot how much splitting on each variable contributed to a decrase in the gini coefficient, averaged across all the trees. 
+
+```{r fig.height=8, echo=FALSE}
+forest_df <- model_df %>% select(-c(fight_id))
+(forest1 <- randomForest(red_win ~ ., data=forest_df, ntree=500, mtry=20))
+varImpPlot(forest1)
+```
+
+```{r, include = FALSE}
+predResults <- predict(forest1)
+model_test <- as_tibble(cbind(model_df, predResults))
+```
+
+```{r precision_accuracy_recall, include = FALSE}
+model_test %>% select(red_win,predResults)
+with(model_test, table(red_win,predResults))
+```
+
+```{r}, echo = FALSE}
+(stats <- model_test %>% summarize(accuracy = mean(red_win == predResults), precision = sum(red_win == 1 &  predResults == 1)/sum(predResults == 1), recall = sum(red_win == 1 & predResults == 1)/sum(red_win == 1)))
+```
+
+It looks like the following variables are the key drivers to determining the outcome of fights: 
+
+1. % Difference in age  -- by far the most important variable. 
+
+2. __Percent__ of significant strikes ***landed***
+
+3. __Number__ of ground strikes landed
+
+4. % Difference in reach 
+
+5. __Number__ of head strikes LANDED
+
+6. % Difference in time fought. 
+
+An interesting comparison is which strikes are most impactful as the percent of attempts that landed vs. the absolute number. For example, significant strikes (defined by the UFC as a full strike from a distance, as opposed to short jabs or strikes from within the clinch) is most impactful as a percent. The learning for fighters here is to optimize for quality over quantity when your opponent is at a distance. Conversely, when your opponent is on the ground you're better off attempting a ton of ground strikes, since it is the number of strikes landed that improves odds of winning. The learning is the same for head strikes.
+
+```{r, echo=FALSE}
+#3D graphs for top in-fighting and physical variables
+library(plotly)
+plot_ly(fighter_df, x = ~age, y = ~Reach_cms, z = ~wins, color = ~stance, colors = c('#BF382A', '#0C4B8E')) %>% add_markers() %>% layout(scene = list(xaxis = list(title = 'Age'), yaxis = list(title = 'Reach'), zaxis = list(title = 'Wins')))
+plot_ly(fighter_df, x = ~avg_SIG_STR_pct, y = ~avg_GROUND_landed, z = ~wins, color = ~stance, colors = c('#BF382A', '#0C4B8E')) %>% add_markers() %>% layout(scene = list(xaxis = list(title = 'Avg Significant Strikes %'), yaxis = list(title = 'Avg Ground Landed'), zaxis = list(title = 'Wins')))
+```
+
+Another interesting comparison is how many of the key drivers were physical attributes vs. in-fight strategies. A learning for future fighters would be to look at their age and reach relative to their peers, seriously. Fighters who are particularly young with large reaches would be especially advantaged. The analysis also highlights the importance of conditioning for MMA athletes, particularly when fighting more experienced fighters. 
+
+# Neural Network
+
+As a predictive exercise, we'll feed these variables into a small, 5 layered neural net. Neural nets have the advantage of learning, through each layer, which variables (and/or which combinations of layers) are most important to predicting the outcome. While this makes large neural nets strong algorithms, it is very hard to interpret them and get an intuition for which variables are important and why. Therefore, in this case, we feed the neural net with variables we already know from our random forest (and our intuition) are important. The neural net improves marginally on the random forest, achieving an overall accuracy of 65%. Looking at the confusion matrix, it looks like Recall actually went down to about 73% and Precision went up to 67%. Comparing this to the random forest, it looks like the model loosened its prediction of wins, versus the random forest that overpredicted the red corner winning.
+
+#### Confusion Matrix
+```{r, include=FALSE}
+#neural network confusion matrix
+neural_1 <- nnet(red_win~diff_age + diff_avg_opp_SIG_STR_pct + diff_avg_opp_GROUND_landed + diff_Reach_cms + diff_avg_opp_HEAD_landed+diff_total_time_fought, data = model_df, size = 5)
+neural_predicts <- predict(neural_1, newdata = model_df, type = "class")
+(neural_confusion <- tally(neural_predicts~red_win, data = model_df, format = "count"))
+```
+```{r, include = FALSE}
+#accuracy
+(sum(diag(neural_confusion))/nrow(model_df))*100
+```
+```{r, echo=FALSE}
+(neural_confusion <- tally(neural_predicts~red_win, data = model_df, format = "count"))
+```
+
+```{r, include = FALSE}
+mypacks <- c("tidyverse", "maps", "ggplot2", "dplyr", "shiny")  # what packages are needed?
+packs <- installed.packages()   # find installed package list
+install.me <- mypacks[!(mypacks %in% packs[,"Package"])]  #what needs to be installed?
+if (length(install.me) >= 1) install.packages(install.me, repos = "http://cran.us.r-project.org")   # install (if needed)
+lapply(mypacks, library, character.only=TRUE)  # load all packages
+library(tidyverse)
+library(dplyr)
+library(maps)
+library(ggplot2)
+library(shiny)
+df <- read_csv("https://raw.githubusercontent.com/econ122-f19/finalproject-thereason4thebeatin/master/data.csv?token=AJIRWMKUHX6YXRO4G4LSDF26ALDVY")
+fighters_df <- read_csv("https://raw.githubusercontent.com/econ122-f19/finalproject-thereason4thebeatin/master/raw_fighter_details.csv?token=AJIRWMPJLBSQO3TWIL5I7226ALDXK")
+preprocessed_df <- read.csv("https://raw.githubusercontent.com/econ122-f19/finalproject-thereason4thebeatin/master/preprocessed_data.csv?token=AJIRWMPIX4ADTQ3TAPIYHMK6ALDY6")
+```
+# Geographic Data
+
+Finally, for those interested, we have mapped the number of red and blue wins, number of fights, and average number of rounds by state, as well as number of fights by country... 
+
+### By Country... 
+
+When looking at the different variables at the world scale, we see that, due to the overwhelming amount of fights that take place in the United States, the results would be heavily skewed to the US. However, the most interesting statistic on the world scale is the average length of the rounds that occur, as we see that in the States and in Japan, fights occur at a faster pace. This could attributed to many different reasons: the rules regarding the length of  the bout (round and time wise), the potential difference in weight classes, as well as potential differences in fighting styles.
+
+```{r, echo=FALSE}
+#world level maps
+df_geo_world <- df %>% separate(location, into = c("City", "State", "Country"), sep = ", ")
+MainWorld <- map_data("world")
+avroundsworld <- df_geo_world %>% group_by(Country) %>%  summarise(av_roundsW = mean(no_of_rounds))
+ggplot() + coord_map() + geom_map(data = avroundsworld, aes(map_id = Country, fill = av_roundsW), map = MainWorld)+ expand_limits(x=MainWorld$long, y=MainWorld$lat) + ggtitle("Average Number of Rounds by Country")
+```
+
+### By State... 
+
+Looking at the variables on the state level, we do see that the variables are quite skewed towards Nevada, as many of the events take place in Las Vegas. However, the scale of the variables gives great insight into the variables. We can see that the Red corner wins more fights than the Blue corner through the scale. Furthermore, the average number of rounds, gives a different perspective on the length of the fights that take place in the United States. These differences can be attributed to the same reasons as in the country-level.
+
+```{r, echo=FALSE}
+#state level maps
+df_geo_us <- df %>% separate(location, into = c("City", "State", "Country"), sep = ", ") %>% filter(Country == 'USA') %>% mutate(State = str_to_lower(State))
+MainStates <- map_data("state") 
+Rwins <- df_geo_us %>% mutate(Winner = if_else(Winner == 'Red', 1, 0)) %>% group_by(State) %>% summarise(numRwins = sum(Winner))
+Bwins <- df_geo_us %>% mutate(Winner = if_else(Winner == 'Blue', 1, 0)) %>% group_by(State) %>% summarise(numBwins = sum(Winner))
+numfights <- df_geo_us %>%  group_by(State) %>% summarise(num_fights = n())
+avrounds <- df_geo_us %>% group_by(State) %>%  summarise(av_rounds = mean(no_of_rounds))
+ggplot() + coord_map() + geom_map(data = Rwins, aes(map_id = State, fill = numRwins), map = MainStates)+ expand_limits(x=MainStates$long, y=MainStates$lat) + ggtitle("Number of Red Wins by State")
+ggplot() + coord_map() + geom_map(data = Bwins, aes(map_id = State, fill = numBwins), map = MainStates)+ expand_limits(x=MainStates$long, y=MainStates$lat) + ggtitle("Number of Blue Wins by State")
+ggplot() + coord_map() + geom_map(data = numfights, aes(map_id = State, fill = num_fights), map = MainStates)+ expand_limits(x=MainStates$long, y=MainStates$lat) + ggtitle("Number of Fights by State")
+ggplot() + coord_map() + geom_map(data = avrounds, aes(map_id = State, fill = av_rounds), map = MainStates)+ expand_limits(x=MainStates$long, y=MainStates$lat) + ggtitle("Average Number of Rounds by State")
+```
+
+```{r, echo=FALSE}
+df_geo_us_shiny <- df %>% separate(location, into = c("City", "State", "Country"), sep = ", ") %>% filter(Country == 'USA') %>% mutate(State = str_to_lower(State)) %>% mutate(Winner = if_else(Winner == 'Red', 1, 0)) %>%  mutate(title_bout = if_else(title_bout == TRUE, 1, 0)) %>% group_by(State) %>% summarise(av_rounds = mean(no_of_rounds), perc_red_win = sum(Winner)/n(), numfights = n(), num_title = sum(title_bout)) #creating table with averages by state
+
+inputPanel(
+  sliderInput("titles", label = "States with Title Fights Above:", 
+              min = round(min(df_geo_us_shiny$num_title)), max = round(max(df_geo_us_shiny$num_title)), value = mean(df_geo_us_shiny$num_title, na.rm = TRUE), step = 5)
+) #input UI - enables users to choose how many title fights they want to sort by 
+
+renderPlot(
+  ggplot(df_shiny <- df_geo_us_shiny %>% mutate(above = if_else(num_title >= input$titles, 1, 0))) + coord_map() + geom_map(data = df_shiny, aes(map_id = State, fill = above), map = MainStates)+ expand_limits(x=MainStates$long, y=MainStates$lat) + scale_fill_distiller(palette = "RdYlBu", direction = -1) + theme(legend.position = "none")) #plot that colours by state
+```
+
+In terms of fight cards, title fights are the most exciting for fans and commentators. The visual above enables users to look at which state has the highest number of title fights. Unsurprisingly Nevada has the most with `r max(df_geo_us_shiny$num_title)` title fights. 
+
+
+
+
+© 2019 GitHub, Inc.
+Terms
+Privacy
+Security
+Stat  
